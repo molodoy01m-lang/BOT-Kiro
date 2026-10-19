@@ -1,3 +1,5 @@
-discord.py
-flask
-gunicorn
+discord.py[voice]
+Flask
+aiohttp
+yt-dlp
+PyNaCl
