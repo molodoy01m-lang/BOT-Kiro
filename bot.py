@@ -39,10 +39,13 @@ intents.voice_states = True
 intents.moderation = True
 intents.guilds = True
 
-AUTO_ROLE_ID = 1532847437125783805  # Жаңа кіргенде берілетін роль ID-сі (қажет болса ID қойыңыз)
-WELCOME_CHANNEL_ID = 0
+# Скриншоттағы сіздің ID-леріңіз сақталды:
+AUTO_ROLE_ID = 1532847437125783805
 SERVER_LOG_CHANNEL_ID = 1532839708105900124
 GIRL_LOG_CHANNEL_ID = 1557052405194166405
+
+# Деңгей көтерілгенде хабарлама баратын арна ID-сін осы жерге жазыңыз:
+LEVEL_CHANNEL_ID = 1542652618734575738
 
 GIRL_BANNER_URL = "https://media.discordapp.net/attachments/1544309714962227230/1557815971660435456/banner_girl.png?ex=6ac92cae&is=6ac7db2e&hm=250e0baedfe61fc5baff21e59e0e6bd61f5e494d88ade315be12b6e3c199c916&=&format=webp&quality=lossless&width=2048&height=729"
 GIRL_STAFF_ROLE_IDS = [1554889319574143088, 1556691625294696559]
@@ -50,9 +53,19 @@ GIRL_STAFF_ROLE_IDS = [1554889319574143088, 1556691625294696559]
 temp_voice_channels = {}
 
 # --------------------------------------------------
+# LEVEL / XP SYSTEM DATA
+# --------------------------------------------------
+user_xp = collections.defaultdict(int)
+user_level = collections.defaultdict(lambda: 1)
+
+def xp_for_level(level):
+    return level * 100
+
+# --------------------------------------------------
 # HELPER FUNCTIONS
 # --------------------------------------------------
 async def send_custom_log(guild: discord.Guild, channel_id: int, emoji: str, title: str, description_lines: list, color: discord.Color):
+    if channel_id == 0: return
     log_channel = guild.get_channel(channel_id)
     if log_channel:
         desc = "\n".join(description_lines)
@@ -364,7 +377,7 @@ class KiroBot(commands.Bot):
 bot = KiroBot()
 
 # --------------------------------------------------
-# MEMBER JOIN (AUTO-ROLE & WELCOME)
+# MEMBER JOIN (AUTO-ROLE ONLY)
 # --------------------------------------------------
 @bot.event
 async def on_member_join(member):
@@ -375,6 +388,33 @@ async def on_member_join(member):
                 await member.add_roles(role, reason="Авто-роль при входе")
             except Exception as e:
                 print(f"Ошибка выдачи авто-роли: {e}")
+
+# --------------------------------------------------
+# MESSAGE EVENT (XP & LEVEL SYSTEM)
+# --------------------------------------------------
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    # XP қосу
+    u_id = message.author.id
+    user_xp[u_id] += 15
+    curr_lvl = user_level[u_id]
+    
+    # Деңгей көтерілуін тексеру
+    if user_xp[u_id] >= xp_for_level(curr_lvl):
+        user_level[u_id] += 1
+        new_lvl = user_level[u_id]
+        
+        # Хабарлама жазу (Скриншоттағыдай дәл мәтінмен)
+        lvl_msg = f"Кутты болсын котакбас {message.author.mention}! Котерылдын {new_lvl} уровня!"
+        
+        target_ch = message.guild.get_channel(LEVEL_CHANNEL_ID) if LEVEL_CHANNEL_ID != 0 else message.channel
+        if target_ch:
+            await target_ch.send(lvl_msg)
+
+    await bot.process_commands(message)
 
 # --------------------------------------------------
 # VOICE AUTO-CREATION & LOGS
@@ -446,18 +486,10 @@ async def on_message_delete(message):
 @bot.command(name="clear", aliases=["purge", "clean"])
 @commands.has_permissions(manage_messages=True)
 async def clear_messages(ctx, amount: int = 10):
-    """Удаление сообщений (Пример: !clear 10)"""
     deleted = await ctx.channel.purge(limit=amount + 1)
     confirm_msg = await ctx.send(f"🧹 Успешно удалено **{len(deleted) - 1}** сообщений!")
     await asyncio.sleep(3)
     await confirm_msg.delete()
-
-@clear_messages.error
-async def clear_messages_error(ctx, error):
-    if isinstance(error, commands.MissingPermissions):
-        await ctx.send("❌ У вас нет прав для удаления сообщений (`Manage Messages`).", delete_after=5)
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send("❌ Укажите число сообщений. Пример: `!clear 10`", delete_after=5)
 
 @bot.command()
 async def send_voice_panel(ctx):
