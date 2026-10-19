@@ -40,11 +40,11 @@ intents.moderation = True
 intents.guilds = True
 
 # ЛОГ АРНАЛАРЫНЫҢ ID-ЛЕРІ
-SERVER_LOG_CHANNEL_ID = 1561671362647691284  # Сервер логтары (Бан, разбан, хабарлама өшу, войс)
+SERVER_LOG_CHANNEL_ID = 1561671362647691284  # Сервер логтары (Бан, разбан, сообщение өшу, войс)
 GIRL_LOG_CHANNEL_ID = 1557052405194166405    # Девушка тикетінің логтары
 
 GIRL_BANNER_URL = "https://media.discordapp.net/attachments/1544309714962227230/1557815971660435456/banner_girl.png?ex=6ac92cae&is=6ac7db2e&hm=250e0baedfe61fc5baff21e59e0e6bd61f5e494d88ade315be12b6e3c199c916&=&format=webp&quality=lossless&width=2048&height=729"
-GIRL_STAFF_ROLE_IDS = [1554889319574143088, 1556691625294696559]
+GIRL_STAFF_ROLE_IDS = [1556691625294696559, 1554889319574143088]
 
 # --------------------------------------------------
 # LOG HELPER FUNCTION
@@ -408,10 +408,11 @@ async def leave(ctx):
         await ctx.send("❌ Бот не находится в голосовом канале.")
 
 # --------------------------------------------------
-# PANEL COMMAND
+# PANEL COMMAND (С БАННЕРОМ)
 # --------------------------------------------------
 @bot.command()
 async def send_girl_ticket(ctx):
+    # Баннер суретін жіберу бөлімі:
     file = await get_discord_file_from_url(GIRL_BANNER_URL, "banner_girl.png")
     if file:
         img_embed = discord.Embed(color=discord.Color.from_rgb(255, 105, 180)).set_image(url="attachment://banner_girl.png")
