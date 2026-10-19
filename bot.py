@@ -5,7 +5,7 @@ import io
 import collections
 import discord
 from discord.ext import commands
-from discord.ui import View, Button
+from discord.ui import View, Button, Modal, TextInput, UserSelect
 from flask import Flask
 from threading import Thread
 import yt_dlp
@@ -39,16 +39,18 @@ intents.voice_states = True
 intents.moderation = True
 intents.guilds = True
 
-# ЛОГ АРНАЛАРЫНЫҢ ID-ЛЕРІ
-SERVER_LOG_CHANNEL_ID = 1561671362647691284  # Сервер логтары
-GIRL_LOG_CHANNEL_ID =  1557052405194166405   # Девушка тикетінің логтары
+AUTO_ROLE_ID = 1532847437125783805  # Жаңа кіргенде берілетін роль ID-сі (қажет болса ID қойыңыз)
+WELCOME_CHANNEL_ID = 1532839708105900124
+SERVER_LOG_CHANNEL_ID = 1532839708105900124
+GIRL_LOG_CHANNEL_ID = 1557052405194166405
 
-# Тура осы "VIP-СТАТУС ДЛЯ ДЕВУШЕК" суретінің тура сілтемесі:
-GIRL_BANNER_URL = "https://multibot.pro/api/embeds/images/nfmpvssumgp3km0o"
+GIRL_BANNER_URL = "https://media.discordapp.net/attachments/1544309714962227230/1557815971660435456/banner_girl.png?ex=6ac92cae&is=6ac7db2e&hm=250e0baedfe61fc5baff21e59e0e6bd61f5e494d88ade315be12b6e3c199c916&=&format=webp&quality=lossless&width=2048&height=729"
 GIRL_STAFF_ROLE_IDS = [1554889319574143088, 1556691625294696559]
 
+temp_voice_channels = {}
+
 # --------------------------------------------------
-# LOG HELPER FUNCTION
+# HELPER FUNCTIONS
 # --------------------------------------------------
 async def send_custom_log(guild: discord.Guild, channel_id: int, emoji: str, title: str, description_lines: list, color: discord.Color):
     log_channel = guild.get_channel(channel_id)
@@ -62,9 +64,144 @@ async def send_custom_log(guild: discord.Guild, channel_id: int, emoji: str, tit
         )
         await log_channel.send(embed=embed)
 
+async def get_discord_file_from_url(url: str, filename: str):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                data = await resp.read()
+                return discord.File(io.BytesIO(data), filename=filename)
+    return None
+
 def has_staff_permission(member: discord.Member) -> bool:
     user_role_ids = [role.id for role in member.roles]
     return any(role_id in user_role_ids for role_id in GIRL_STAFF_ROLE_IDS)
+
+# --------------------------------------------------
+# TEMP VOICE INTERFACE & MODALS
+# --------------------------------------------------
+class VoiceRenameModal(Modal, title="Изменить название"):
+    channel_name = TextInput(label="Новое название канала", placeholder="Введите название...", required=True, max_length=100)
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.user.voice.channel.edit(name=self.channel_name.value)
+        await interaction.response.send_message(f"✅ Канал переименован в: **{self.channel_name.value}**", ephemeral=True)
+
+class VoiceLimitModal(Modal, title="Лимит пользователей"):
+    user_limit = TextInput(label="Лимит мест (0-99)", placeholder="0 — без лимита", required=True, max_length=2)
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            val = int(self.user_limit.value)
+            if 0 <= val <= 99:
+                await interaction.user.voice.channel.edit(user_limit=val)
+                await interaction.response.send_message(f"✅ Лимит мест установлен: **{val}**", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Введите число от 0 до 99.", ephemeral=True)
+        except ValueError:
+            await interaction.response.send_message("❌ Введите корректное число.", ephemeral=True)
+
+class VoiceUserSelectView(View):
+    def __init__(self, action: str):
+        super().__init__(timeout=60)
+        self.action = action
+
+    @discord.ui.select(cls=UserSelect, placeholder="Выберите пользователя...")
+    async def select_user(self, interaction: discord.Interaction, select: UserSelect):
+        target_member = select.values[0]
+        voice_channel = interaction.user.voice.channel
+
+        if self.action == "trust":
+            await voice_channel.set_permissions(target_member, connect=True, view_channel=True)
+            await interaction.response.send_message(f"✅ Пользователь {target_member.mention} добавлен в доверенные.", ephemeral=True)
+        elif self.action == "untrust":
+            await voice_channel.set_permissions(target_member, overwrite=None)
+            await interaction.response.send_message(f"➖ Доверие с {target_member.mention} снято.", ephemeral=True)
+        elif self.action == "kick":
+            if target_member in voice_channel.members:
+                await target_member.move_to(None)
+                await interaction.response.send_message(f"👢 Пользователь {target_member.mention} выгнан из канала.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Пользователь не в вашем канале.", ephemeral=True)
+        elif self.action == "ban":
+            await voice_channel.set_permissions(target_member, connect=False)
+            if target_member in voice_channel.members:
+                await target_member.move_to(None)
+            await interaction.response.send_message(f"🚫 Пользователь {target_member.mention} заблокирован.", ephemeral=True)
+        elif self.action == "unban":
+            await voice_channel.set_permissions(target_member, overwrite=None)
+            await interaction.response.send_message(f"✅ Разблокирован пользователь {target_member.mention}.", ephemeral=True)
+        elif self.action == "transfer":
+            temp_voice_channels[voice_channel.id] = target_member.id
+            await interaction.response.send_message(f"👑 Владение каналом передано {target_member.mention}.", ephemeral=True)
+
+class TempVoiceControlView(View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    def check_owner(self, interaction: discord.Interaction):
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            return False, "❌ Вы должны находиться в своем приватном канале!"
+        voice_channel = interaction.user.voice.channel
+        owner_id = temp_voice_channels.get(voice_channel.id)
+        if not owner_id or owner_id != interaction.user.id:
+            return False, "❌ Вы не являетесь владельцем этого приватного канала!"
+        return True, voice_channel
+
+    @discord.ui.button(emoji="🔤", style=discord.ButtonStyle.secondary, custom_id="tv_rename", row=0)
+    async def rename_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await interaction.response.send_modal(VoiceRenameModal())
+
+    @discord.ui.button(emoji="👥", style=discord.ButtonStyle.secondary, custom_id="tv_limit", row=0)
+    async def limit_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await interaction.response.send_modal(VoiceLimitModal())
+
+    @discord.ui.button(emoji="🔒", style=discord.ButtonStyle.secondary, custom_id="tv_lock", row=0)
+    async def lock_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await res.set_permissions(interaction.guild.default_role, connect=False)
+        await interaction.response.send_message("🔒 Канал закрыт от всех.", ephemeral=True)
+
+    @discord.ui.button(emoji="🔓", style=discord.ButtonStyle.secondary, custom_id="tv_unlock", row=0)
+    async def unlock_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await res.set_permissions(interaction.guild.default_role, connect=True)
+        await interaction.response.send_message("🔓 Канал открыт для всех.", ephemeral=True)
+
+    @discord.ui.button(emoji="👤", style=discord.ButtonStyle.secondary, custom_id="tv_trust", row=1)
+    async def trust_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await interaction.response.send_message("Выберите пользователя для доверия:", view=VoiceUserSelectView("trust"), ephemeral=True)
+
+    @discord.ui.button(emoji="🚫", style=discord.ButtonStyle.secondary, custom_id="tv_ban", row=1)
+    async def ban_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await interaction.response.send_message("Выберите кого забанить:", view=VoiceUserSelectView("ban"), ephemeral=True)
+
+    @discord.ui.button(emoji="👢", style=discord.ButtonStyle.secondary, custom_id="tv_kick", row=1)
+    async def kick_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await interaction.response.send_message("Выберите кого выгнать:", view=VoiceUserSelectView("kick"), ephemeral=True)
+
+    @discord.ui.button(emoji="👑", style=discord.ButtonStyle.secondary, custom_id="tv_transfer", row=2)
+    async def transfer_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await interaction.response.send_message("Выберите нового владельца:", view=VoiceUserSelectView("transfer"), ephemeral=True)
+
+    @discord.ui.button(emoji="🗑️", style=discord.ButtonStyle.danger, custom_id="tv_delete", row=2)
+    async def delete_btn(self, interaction: discord.Interaction, button: Button):
+        ok, res = self.check_owner(interaction)
+        if not ok: return await interaction.response.send_message(res, ephemeral=True)
+        await interaction.response.send_message("🗑️ Удаление канала...", ephemeral=True)
+        del temp_voice_channels[res.id]
+        await res.delete()
 
 # --------------------------------------------------
 # MUSIC SYSTEM CONFIGURATION
@@ -203,7 +340,7 @@ class GirlTicketMainView(View):
         await interaction.followup.send(f"Ваш тикет создан: {t_channel.mention}", ephemeral=True)
 
 # --------------------------------------------------
-# BOT INITIALIZATION & PRESENCE STATUS
+# BOT INIT & PRESENCE STATUS
 # --------------------------------------------------
 class KiroBot(commands.Bot):
     def __init__(self):
@@ -212,6 +349,7 @@ class KiroBot(commands.Bot):
     async def setup_hook(self):
         self.add_view(GirlTicketMainView())
         self.add_view(TicketControlView())
+        self.add_view(TempVoiceControlView())
 
     async def on_ready(self):
         activity = discord.Activity(
@@ -226,71 +364,37 @@ class KiroBot(commands.Bot):
 bot = KiroBot()
 
 # --------------------------------------------------
-# SERVER LOGS EVENTS
+# MEMBER JOIN (AUTO-ROLE & WELCOME)
 # --------------------------------------------------
 @bot.event
-async def on_message_delete(message):
-    if message.author.bot: return
-    await send_custom_log(
-        guild=message.guild,
-        channel_id=SERVER_LOG_CHANNEL_ID,
-        emoji="🗑️",
-        title="Удаление сообщения",
-        description_lines=[
-            f"**Автор:** {message.author.name} ({message.author.mention})",
-            f"**Канал:** {message.channel.mention}",
-            f"**Содержание:**\n`{message.content or 'Медиа / Вложение'}`"
-        ],
-        color=discord.Color.red()
-    )
+async def on_member_join(member):
+    if AUTO_ROLE_ID != 0:
+        role = member.guild.get_role(AUTO_ROLE_ID)
+        if role:
+            try:
+                await member.add_roles(role, reason="Авто-роль при входе")
+            except Exception as e:
+                print(f"Ошибка выдачи авто-роли: {e}")
 
-@bot.event
-async def on_member_ban(guild, user):
-    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
-        moderator = entry.user
-        reason = entry.reason or "Не указана"
-        break
-    else:
-        moderator = None
-        reason = "Не указана"
-
-    log_channel = guild.get_channel(SERVER_LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(title="🚫 Бан выдан", color=discord.Color.red())
-        embed.add_field(name="Игрок", value=f"{user.mention}\n`{user.id}`", inline=True)
-        embed.add_field(name="Разбан", value="Никогда", inline=True)
-        embed.add_field(name="Причина", value=f"`{reason}`", inline=True)
-        
-        mod_name = moderator.name if moderator else "Неизвестно"
-        mod_id = moderator.id if moderator else "00000000"
-        embed.set_footer(text=f"Администратор: {mod_name} • {mod_id}")
-        embed.set_thumbnail(url=user.display_avatar.url)
-        await log_channel.send(embed=embed)
-
-@bot.event
-async def on_member_unban(guild, user):
-    async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.unban):
-        moderator = entry.user
-        reason = entry.reason or "Снято из профиля"
-        break
-    else:
-        moderator = None
-        reason = "Снято из профиля"
-
-    log_channel = guild.get_channel(SERVER_LOG_CHANNEL_ID)
-    if log_channel:
-        embed = discord.Embed(title="✅ Бан снят", color=discord.Color.green())
-        embed.add_field(name="Игрок", value=f"{user.mention}\n`{user.id}`", inline=True)
-        embed.add_field(name="Причина разбана", value=f"`{reason}`", inline=True)
-        
-        mod_name = moderator.name if moderator else "Неизвестно"
-        mod_id = moderator.id if moderator else "00000000"
-        embed.set_footer(text=f"Администратор: {mod_name} • {mod_id}")
-        embed.set_thumbnail(url=user.display_avatar.url)
-        await log_channel.send(embed=embed)
-
+# --------------------------------------------------
+# VOICE AUTO-CREATION & LOGS
+# --------------------------------------------------
 @bot.event
 async def on_voice_state_update(member, before, after):
+    if after.channel and "создать войс" in after.channel.name.lower():
+        v_ch = await member.guild.create_voice_channel(
+            name=f"Комната {member.name}", 
+            category=after.channel.category
+        )
+        await v_ch.set_permissions(member, connect=True, speak=True, manage_channels=True)
+        temp_voice_channels[v_ch.id] = member.id
+        await member.move_to(v_ch)
+
+    if before.channel and before.channel.id in temp_voice_channels:
+        if len(before.channel.members) == 0:
+            del temp_voice_channels[before.channel.id]
+            await before.channel.delete()
+
     guild = member.guild
     if before.channel is None and after.channel is not None:
         await send_custom_log(
@@ -316,6 +420,60 @@ async def on_voice_state_update(member, before, after):
             ],
             color=discord.Color.red()
         )
+
+# --------------------------------------------------
+# SERVER LOGS EVENTS
+# --------------------------------------------------
+@bot.event
+async def on_message_delete(message):
+    if message.author.bot: return
+    await send_custom_log(
+        guild=message.guild,
+        channel_id=SERVER_LOG_CHANNEL_ID,
+        emoji="🗑️",
+        title="Удаление сообщения",
+        description_lines=[
+            f"**Автор:** {message.author.name} ({message.author.mention})",
+            f"**Канал:** {message.channel.mention}",
+            f"**Содержание:**\n`{message.content or 'Медиа / Вложение'}`"
+        ],
+        color=discord.Color.red()
+    )
+
+# --------------------------------------------------
+# CLEAR & VOICE PANEL COMMANDS
+# --------------------------------------------------
+@bot.command(name="clear", aliases=["purge", "clean"])
+@commands.has_permissions(manage_messages=True)
+async def clear_messages(ctx, amount: int = 10):
+    """Удаление сообщений (Пример: !clear 10)"""
+    deleted = await ctx.channel.purge(limit=amount + 1)
+    confirm_msg = await ctx.send(f"🧹 Успешно удалено **{len(deleted) - 1}** сообщений!")
+    await asyncio.sleep(3)
+    await confirm_msg.delete()
+
+@clear_messages.error
+async def clear_messages_error(ctx, error):
+    if isinstance(error, commands.MissingPermissions):
+        await ctx.send("❌ У вас нет прав для удаления сообщений (`Manage Messages`).", delete_after=5)
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("❌ Укажите число сообщений. Пример: `!clear 10`", delete_after=5)
+
+@bot.command()
+async def send_voice_panel(ctx):
+    embed = discord.Embed(
+        title="🔊 TempVoice Interface",
+        description=(
+            "Этот **интерфейс** можно использовать для управления личными каналами.\n"
+            "Дополнительные возможности доступны через кнопки ниже.\n\n"
+            "🔤 **НАЗВАНИЕ** | 👥 **ЛИМИТ** | 🔒 **ДОСТУП**\n"
+            "👤 **ДОВЕРЯТЬ** | 🚫 **ЗАБАНИТЬ** | 👢 **ВЫГНАТЬ**\n"
+            "👑 **ПЕРЕДАТЬ** | 🗑️ **УДАЛИТЬ**\n\n"
+            "*Нажмите нужную кнопку ниже для управления каналом.*"
+        ),
+        color=discord.Color.from_rgb(220, 50, 50)
+    )
+    await ctx.send(embed=embed, view=TempVoiceControlView())
 
 # --------------------------------------------------
 # MUSIC COMMANDS
@@ -366,7 +524,6 @@ async def play(ctx, *, search: str):
     except Exception as e:
         await msg.edit(content=f"❌ Ошибка поиска трека: `{e}`")
 
-
 @bot.command(name="skip", aliases=["s"])
 async def skip(ctx):
     if ctx.voice_client and ctx.voice_client.is_playing():
@@ -375,14 +532,12 @@ async def skip(ctx):
     else:
         await ctx.send("❌ Сейчас ничего не играет.")
 
-
 @bot.command(name="stop")
 async def stop(ctx):
     if ctx.voice_client:
         music_queues[ctx.guild.id].clear()
         ctx.voice_client.stop()
         await ctx.send("⏹️ Воспроизведение остановлено, очередь очищена.")
-
 
 @bot.command(name="leave")
 async def leave(ctx):
@@ -394,13 +549,15 @@ async def leave(ctx):
         await ctx.send("❌ Бот не находится в голосовом канале.")
 
 # --------------------------------------------------
-# PANEL COMMAND (С ПРЯМОЙ ССЫЛКОЙ НА БАННЕР)
+# PANEL COMMAND (С БАННЕРОМ)
 # --------------------------------------------------
 @bot.command()
 async def send_girl_ticket(ctx):
-    img_embed = discord.Embed(color=discord.Color.from_rgb(255, 105, 180))
-    img_embed.set_image(url=GIRL_BANNER_URL)
-    
+    file = await get_discord_file_from_url(GIRL_BANNER_URL, "banner_girl.png")
+    if file:
+        img_embed = discord.Embed(color=discord.Color.from_rgb(255, 105, 180)).set_image(url="attachment://banner_girl.png")
+        await ctx.send(file=file, embed=img_embed)
+        
     text_embed = discord.Embed(
         description=(
             "💗 **Роль Девушка**\n\n"
@@ -413,7 +570,6 @@ async def send_girl_ticket(ctx):
         ), 
         color=discord.Color.from_rgb(255, 105, 180)
     )
-    await ctx.send(embed=img_embed)
     await ctx.send(embed=text_embed, view=GirlTicketMainView())
 
 # --------------------------------------------------
