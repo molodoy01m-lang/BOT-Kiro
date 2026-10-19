@@ -5,7 +5,7 @@ import io
 import collections
 import discord
 from discord.ext import commands
-from discord.ui import View, Button, Modal, TextInput
+from discord.ui import View, Button
 from flask import Flask
 from threading import Thread
 import yt_dlp
@@ -40,11 +40,12 @@ intents.moderation = True
 intents.guilds = True
 
 # ЛОГ АРНАЛАРЫНЫҢ ID-ЛЕРІ
-SERVER_LOG_CHANNEL_ID = 1561671362647691284  # Сервер логтары (Бан, разбан, сообщение өшу, войс)
-GIRL_LOG_CHANNEL_ID = 1557052405194166405    # Девушка тикетінің логтары
+SERVER_LOG_CHANNEL_ID = 1561671362647691284  # Сервер логтары
+GIRL_LOG_CHANNEL_ID =  1557052405194166405   # Девушка тикетінің логтары
 
-GIRL_BANNER_URL = "https://media.discordapp.net/attachments/1544309714962227230/1557815971660435456/banner_girl.png?ex=6ac92cae&is=6ac7db2e&hm=250e0baedfe61fc5baff21e59e0e6bd61f5e494d88ade315be12b6e3c199c916&=&format=webp&quality=lossless&width=2048&height=729"
-GIRL_STAFF_ROLE_IDS = [1556691625294696559, 1554889319574143088]
+# Тура осы "VIP-СТАТУС ДЛЯ ДЕВУШЕК" суретінің тура сілтемесі:
+GIRL_BANNER_URL = "https://multibot.pro/api/embeds/images/nfmpvssumgp3km0o"
+GIRL_STAFF_ROLE_IDS = [1554889319574143088, 1556691625294696559]
 
 # --------------------------------------------------
 # LOG HELPER FUNCTION
@@ -61,20 +62,12 @@ async def send_custom_log(guild: discord.Guild, channel_id: int, emoji: str, tit
         )
         await log_channel.send(embed=embed)
 
-async def get_discord_file_from_url(url: str, filename: str):
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status == 200:
-                data = await resp.read()
-                return discord.File(io.BytesIO(data), filename=filename)
-    return None
-
 def has_staff_permission(member: discord.Member) -> bool:
     user_role_ids = [role.id for role in member.roles]
     return any(role_id in user_role_ids for role_id in GIRL_STAFF_ROLE_IDS)
 
 # --------------------------------------------------
-# MUSIC SYSTEM CONFIGURATION (SOUNDCLOUD ENGINE)
+# MUSIC SYSTEM CONFIGURATION
 # --------------------------------------------------
 music_queues = collections.defaultdict(list)
 
@@ -109,13 +102,13 @@ def play_next(ctx):
             ctx.voice_client.play(source, after=lambda e: play_next(ctx))
             asyncio.run_coroutine_threadsafe(ctx.send(f"🎵 Сейчас играет: **{title}**"), bot.loop)
         except Exception as e:
-            asyncio.run_coroutine_threadsafe(ctx.send(f"❌ Ошибка воспроизведения следующего трека: `{e}`"), bot.loop)
+            asyncio.run_coroutine_threadsafe(ctx.send(f"❌ Ошибка воспроизведения: `{e}`"), bot.loop)
             play_next(ctx)
     else:
         asyncio.run_coroutine_threadsafe(ctx.send("🎶 Очередь воспроизведения пуста."), bot.loop)
 
 # --------------------------------------------------
-# TICKET CONTROL & VIEWS WITH GIRL LOGS
+# TICKET CONTROL & VIEWS
 # --------------------------------------------------
 class TicketControlView(View):
     def __init__(self):
@@ -140,7 +133,6 @@ class TicketControlView(View):
         if not has_staff_permission(interaction.user):
             return await interaction.response.send_message("❌ У вас нет прав!", ephemeral=True)
         
-        # GIRL LOG: Тикет жабылғанда
         await send_custom_log(
             guild=interaction.guild,
             channel_id=GIRL_LOG_CHANNEL_ID,
@@ -196,7 +188,6 @@ class GirlTicketMainView(View):
         
         await t_channel.send(content=f"{user.mention} " + " ".join(pings), embed=embed, view=TicketControlView())
         
-        # GIRL LOG: Тикет ашылғанда
         await send_custom_log(
             guild=guild,
             channel_id=GIRL_LOG_CHANNEL_ID,
@@ -223,7 +214,6 @@ class KiroBot(commands.Bot):
         self.add_view(TicketControlView())
 
     async def on_ready(self):
-        # БОТ СТАТУСЫ: "Смотрит kiro.discord | /help"
         activity = discord.Activity(
             type=discord.ActivityType.watching, 
             name="kiro.discord | /help"
@@ -236,7 +226,7 @@ class KiroBot(commands.Bot):
 bot = KiroBot()
 
 # --------------------------------------------------
-# SERVER LOGS EVENTS (СЕРВЕР ЛОГТАРЫ)
+# SERVER LOGS EVENTS
 # --------------------------------------------------
 @bot.event
 async def on_message_delete(message):
@@ -328,11 +318,10 @@ async def on_voice_state_update(member, before, after):
         )
 
 # --------------------------------------------------
-# MUSIC COMMANDS (!play, !skip, !stop, !leave)
+# MUSIC COMMANDS
 # --------------------------------------------------
 @bot.command(name="play", aliases=["p"])
 async def play(ctx, *, search: str):
-    """Воспроизведение музыки через SoundCloud"""
     if not ctx.author.voice:
         return await ctx.send("❌ Сначала зайдите в голосовой канал!")
 
@@ -380,7 +369,6 @@ async def play(ctx, *, search: str):
 
 @bot.command(name="skip", aliases=["s"])
 async def skip(ctx):
-    """Пропустить текущий трек"""
     if ctx.voice_client and ctx.voice_client.is_playing():
         ctx.voice_client.stop()
         await ctx.send("⏭️ Трек пропущен!")
@@ -390,7 +378,6 @@ async def skip(ctx):
 
 @bot.command(name="stop")
 async def stop(ctx):
-    """Остановить воспроизведение и очистить очередь"""
     if ctx.voice_client:
         music_queues[ctx.guild.id].clear()
         ctx.voice_client.stop()
@@ -399,7 +386,6 @@ async def stop(ctx):
 
 @bot.command(name="leave")
 async def leave(ctx):
-    """Отключить бота от голосового канала"""
     if ctx.voice_client:
         music_queues[ctx.guild.id].clear()
         await ctx.voice_client.disconnect()
@@ -408,16 +394,13 @@ async def leave(ctx):
         await ctx.send("❌ Бот не находится в голосовом канале.")
 
 # --------------------------------------------------
-# PANEL COMMAND (С БАННЕРОМ)
+# PANEL COMMAND (С ПРЯМОЙ ССЫЛКОЙ НА БАННЕР)
 # --------------------------------------------------
 @bot.command()
 async def send_girl_ticket(ctx):
-    # Баннер суретін жіберу бөлімі:
-    file = await get_discord_file_from_url(GIRL_BANNER_URL, "banner_girl.png")
-    if file:
-        img_embed = discord.Embed(color=discord.Color.from_rgb(255, 105, 180)).set_image(url="attachment://banner_girl.png")
-        await ctx.send(file=file, embed=img_embed)
-        
+    img_embed = discord.Embed(color=discord.Color.from_rgb(255, 105, 180))
+    img_embed.set_image(url=GIRL_BANNER_URL)
+    
     text_embed = discord.Embed(
         description=(
             "💗 **Роль Девушка**\n\n"
@@ -430,6 +413,7 @@ async def send_girl_ticket(ctx):
         ), 
         color=discord.Color.from_rgb(255, 105, 180)
     )
+    await ctx.send(embed=img_embed)
     await ctx.send(embed=text_embed, view=GirlTicketMainView())
 
 # --------------------------------------------------
